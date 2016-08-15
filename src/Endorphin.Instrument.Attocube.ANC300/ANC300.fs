@@ -19,56 +19,58 @@ module ANC300 =
     type Direction = Up | Down
 
     type PositionerMode =
-    | OffsetVoltage
+    | Ground
     | Step
+    | OffsetVoltage
      override x.ToString() = match x with
+                             | Ground -> "GND"
                              | OffsetVoltage -> "OSV"
                              | Step -> "STP"
 
     type PositionerState =
+    | Off
     | Parked
     | Floating of offset : float<V>
 
     let private uc (x:string) = x.ToUpper()
 
     let parseMode = uc >> function
-                          | "OSV" -> OffsetVoltage
+                          | "GND" -> Ground
                           | "STP" -> Step
+                          | "OSV" -> OffsetVoltage
                           | x -> failwithf "Unexpected positioner mode: \"%s\"" x
 
     let luaFunctions =
         [ "require \"io\""
           "require \"os\""
-          """function trigger() \
-                 local f = io.open("/dev/ttyS2","w"); \
-                 f:write("\n"); \
+          "function trigger() \
+                 local f = io.open(\"/dev/ttyS2\",\"w\"); \
+                 f:write(\" \"); \
                  f:close(); \
-                 end""" /// Cause DTR line on serial port to go high, triggering acquisition (via electronics)
+                 end" /// Cause DTR line on serial port to go high, triggering acquisition (via electronics)
           """function dir(d) for i in io.popen("ls " .. d):lines() do print(i) end end"""
-          """function run(x) for i in io.popen(x):lines() do print(i) end; end"""
+          """function run(x) for i in io.popen(x):lines() do print(i) end end"""
           """function busywait(t) local n = math.ceil(t / 1.42e-3); for i = 0,n do end end""" // in ms
-          """function setXOffset(v) m1.mode = OSV; m1.osv=v"""
-          """function setYOffset(v) m2.mode = OSV; m2.osv=v"""
-          """function setZOffset(v) m3.mode = OSV; m3.osv=v"""
-          """function pathZ(points,dwell,sendTrigger) \
-                m3.mode = OSV; \
+          """function setOffset(axis,v) axis.mode = OSV; axis.osv=v"""
+          "function path(axis,points,dwell,sendTrigger) \
+                axis.mode = OSV; \
                 for i,v ipairs do \
-                   m3.osv = v \
+                   axis.osv = v \
                    if sendTrigger then trigger() end \
                    busywait(dwell) \
-                end
-             end"""
-          """function sweepZ(start,finish,stepsize,dwell,sendTrigger) \
-                m3.mode = OSV;
-                for v = start,finish,stepsize do m3.osv=v; \
+                end \
+             end"
+          "function sweep(axis,start,finish,stepsize,dwell,sendTrigger) \
+                axis.mode = OSV; \
+                for v = start,finish,stepsize do axis.osv=v; \
                    if sendTrigger then trigger() end \
                    busywait(dwell); \
                 end \
-             end"""
-          """function wobbleZ(start,max,min,stepsize,dwell,sendTrigger) \
-               sweepZ(start,max,stepsize,dwell,sendTrigger) \
-               sweepZ(max-stepsize,min,-stepsize,dwell,sendTrigger) \
-               sweepZ(min+stepsize,start,stepsize,dwell,sendTrigger)""" ]
+             end"
+          "function wobble(axis,start,max,min,stepsize,dwell,sendTrigger) \
+               sweep(axis,start,max,stepsize,dwell,sendTrigger) \
+               sweep(axis,max-stepsize,min,-stepsize,dwell,sendTrigger) \
+               sweep(axis,min+stepsize,start,stepsize,dwell,sendTrigger)" ]
 
 
     /// Access to the experimental Lua console
@@ -107,15 +109,18 @@ module ANC300 =
             | ["OK"] -> return ()
             | _ -> failwithf "Lua command failed: %A" response }
 
-        member x.OscillateZ start max min stepsize time trigger =
-            x.SendCommandAsync <| (sprintf "wobbleZ(%f,%f,%f,%f,%f,%A)" start max min stepsize time trigger)
+        member x.Oscillate axis start max min stepsize time trigger =
+            x.SendCommandAsync <| (sprintf "wobble(%s,%f,%f,%f,%f,%f,%A)" (luaAxis axis) start max min stepsize time trigger)
 
-        member x.PathZ points time trigger =
+        member x.Path axis points time trigger =
             let points' = "{ " + (List.reduce (sprintf "%s, %s") points) + " }"
-            x.SendCommandAsync <| sprintf "pathZ( %s, %f, %A )" points' time trigger
+            x.SendCommandAsync <| sprintf "path( %s, %s, %f, %A )" (luaAxis axis) points' time trigger
 
-        member x.SetMode (axis:Axis) (mode:PositionerMode) =
+        member x.SetMode axis (mode:PositionerMode) =
             x.SendCommandSync <| sprintf "%s.mode = %A" (luaAxis axis) mode
+
+        member x.SetOffset axis (offset:float<V>) =
+            x.SendCommandSync <| sprintf "setOffset(%s,%f)" (luaAxis axis) offset
 
         interface IDisposable with
             member __.Dispose() = (luaPort :> IDisposable).Dispose()
@@ -129,6 +134,7 @@ module ANC300 =
         let port = new TcpipInstrument("ANC300 control port",handleOutput,hostname,7230)
 
         let extractQueryResponse (lines : string list) =
+            printf "Lines going in: %A" lines
             match List.tryLast lines with
             | Some "OK" ->
                 List.truncate (lines.Length-1) lines
@@ -136,8 +142,8 @@ module ANC300 =
                 failwithf "ANC300 query failed"
 
         let extractMode lines =
-            let r = new Regex(@"^mode\s*=\s*(\s+)")
-            match extractQueryResponse lines with
+            let r = new Regex(@"^mode\s*=\s*(\S+)")
+            match lines with
             | [response] ->
                 let m = r.Match(response)
                 if m.Success then
@@ -148,7 +154,7 @@ module ANC300 =
 
         let extractFrequency lines =
             let r = new Regex(@"^frequency\s*=\s*(\d+)")
-            match extractQueryResponse lines with
+            match lines with
             | [response] ->
                 let m = r.Match(response)
                 if m.Success then
@@ -161,8 +167,8 @@ module ANC300 =
             | _ -> None
 
         let extractVoltage lines =
-            let r = new Regex(@"^voltage\s*=\s*(\d+\.)")
-            match extractQueryResponse lines with
+            let r = new Regex(@"^voltage\s*=\s*(\d+\.\d+)")
+            match lines with
             | [response] ->
                 let m = r.Match(response)
                 if m.Success then
@@ -194,7 +200,8 @@ module ANC300 =
             let response = query |> port.QueryUntil (fun x -> x.StartsWith "> ")
             match List.tryLast response with
             | Some "OK" ->
-                List.truncate (response.Length-1) response
+                // strip off echoed request and OK response
+                List.truncate (response.Length-1) response |> List.tail
             | _ ->
                 failwithf "ANC300 query '%s' failed: %A" query response
         
@@ -208,8 +215,9 @@ module ANC300 =
             // Doesn't work for OSV!
             sprintf "setm %d %A" (int axis) mode |> x.SendCommandSync
 
-        member x.SetOffsetVoltage (axis:Axis) (osv:float<V>) =
-            sprintf "seta %d %f" (int axis) osv |> x.SendCommandSync
+// Not permitted
+//        member x.SetOffsetVoltage (axis:Axis) (osv:float<V>) =
+//            sprintf "seta %d %f" (int axis) osv |> x.SendCommandSync
 
         member x.GetOffsetVoltage (axis:Axis) =
             let response = sprintf "geta %d" (int axis) |> x.Query
@@ -266,7 +274,7 @@ module ANC300 =
 
         member x.Offset with get() = control.GetOffsetVoltage axis
                          and set v = if v > 0.0<V> && v < x.VoltageLimit() then
-                                         control.SetOffsetVoltage axis v
+                                         lua.SetOffset axis v
                                      else failwithf "Offset %fV out of range" v
 
         member x.Frequency with get() = control.GetStepFrequency axis
@@ -281,9 +289,11 @@ module ANC300 =
 
         member x.State
             with get() = match x.Mode with
+                         | Ground -> Off
                          | Step -> Parked
                          | OffsetVoltage -> Floating x.Offset
             and  set state = match state with
+                             | Off -> x.Mode <- Ground
                              | Parked -> x.Mode <- Step
                              | Floating osv ->
                                 x.Mode <- OffsetVoltage
@@ -292,6 +302,7 @@ module ANC300 =
         member x.Step direction count = async {
             let step = control.Step axis direction count
             match x.State with
+            | Off -> failwithf "Not stepping as positioner %A is in grounded" axis
             | Parked -> do! step
             | Floating osv ->
                 x.State <- Parked
@@ -306,8 +317,9 @@ module ANC300 =
                 let max   = if (centre + voltageAmplitude) <= x.VoltageLimit() then centre + voltageAmplitude else x.VoltageLimit()
                 let min   = if (centre + voltageAmplitude) >= 0.0<V> then centre + voltageAmplitude else x.VoltageLimit()
                 let stepsize = (max - min) / (float <| points-1)
-                lua.OscillateZ start max min stepsize time trigger
+                lua.Oscillate axis start max min stepsize time trigger
             match x.State with
+            | Off -> failwithf "Not moving as positioner %A is grounded" axis
             | Parked ->
                 x.State <- Floating <| x.MidRange()
                 do! oscillateZ (x.MidRange()) depth points time trigger

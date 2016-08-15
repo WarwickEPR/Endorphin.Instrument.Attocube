@@ -1,6 +1,6 @@
 NUGET
   remote: https://www.nuget.org/api/v2
-    Endorphin.IO (0.1.4)
+    Endorphin.IO (0.1.5)
       FSharp.Core
       log4net
     FSharp.Core (4.0.0.1) - redirects: force

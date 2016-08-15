@@ -11,11 +11,14 @@
 open Endorphin.Instrument.Attocube.ANC300
 open System
 
+//log4net.Config.BasicConfigurator.Configure()
+
 let readStatus = async {
     use a = new ANC300("attocube")
     printfn "Z mode : %A" (a.X().Mode)
     printfn "Z voltage : %A" (a.X().Voltage)
     printfn "Z frequency : %A" (a.X().Frequency)
+    a.Z().Oscillate
     }
 
 Async.RunSynchronously readStatus
