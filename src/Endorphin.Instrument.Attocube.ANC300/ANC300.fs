@@ -80,7 +80,7 @@ module ANC300 =
         let handleOutput =
             sprintf "Returned: %s" >> logger.Debug
 
-        let luaPort = new TcpipInstrument("ANC300 Lua port",handleOutput,hostname,1027)
+        let luaPort = new TcpipInstrument("ANC300 Lua port",handleOutput,hostname,7231)
 
         let luaAxis = function
         | Axis.X -> "m1"
@@ -126,7 +126,7 @@ module ANC300 =
         let handleOutput =
             sprintf "Returned: %s" >> logger.Debug
 
-        let port = new TcpipInstrument("ANC300 control port",handleOutput,hostname,1028)
+        let port = new TcpipInstrument("ANC300 control port",handleOutput,hostname,7230)
 
         let extractQueryResponse (lines : string list) =
             match List.tryLast lines with
