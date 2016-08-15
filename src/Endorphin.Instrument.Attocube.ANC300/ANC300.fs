@@ -89,9 +89,9 @@ module ANC300 =
         | x -> failwithf "Invalid axis %A" x
 
         do
-            "123456" |> luaPort.WriteLine
-            luaFunctions |> List.iter luaPort.WriteLine
             luaPort.Start()
+            "123456" |> luaPort.QueryUntil (fun x -> x.StartsWith "> ") |> ignore
+            luaFunctions |> List.iter luaPort.WriteLine
         
         // expose loaded functions as members
 
@@ -175,8 +175,8 @@ module ANC300 =
             | _ -> None
 
         do
-            "123456" |> port.WriteLine
             port.Start()
+            "123456" |> port.QueryUntil (fun x -> x.StartsWith "> ") |> ignore
 
         member __.SendCommandSync command =
             let response = command |> port.QueryUntil (fun x -> x.StartsWith "> ")
