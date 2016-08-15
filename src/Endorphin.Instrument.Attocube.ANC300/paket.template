@@ -6,11 +6,11 @@ owners
 authors 
     University of Warwick EPR and Diamond group
 projectUrl
-    https://warwickepr.github.io/Endorphin.Instrument.Attocube.ANC300
+    https://warwickepr.github.io/Endorphin.Instrument.Attocube
 iconUrl
-    https://raw.githubusercontent.com/WarwickEPR/Endorphin.Instrument.Attocube.ANC300/master/docs/files/img/logo.png
+    https://raw.githubusercontent.com/WarwickEPR/Endorphin.Instrument.Attocube/master/docs/files/img/logo.png
 licenseUrl
-    http://github.com/WarwickEPR/Endorphin.Instrument.Attocube.ANC300/blob/master/LICENSE.txt
+    http://github.com/WarwickEPR/Endorphin.Instrument.Attocube/blob/master/LICENSE.txt
 requireLicenseAcceptance
     false
 copyright
@@ -18,6 +18,6 @@ copyright
 tags
     fsharp science
 summary
-    F# driver for a locally built pulse counter
+    F# driver for an Attocube ANC300 
 description
-    F# driver for a locally built pulse counter
+    F# driver for an Attocube ANC300
