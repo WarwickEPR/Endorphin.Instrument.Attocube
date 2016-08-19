@@ -1,6 +1,6 @@
 NUGET
   remote: https://www.nuget.org/api/v2
-    Endorphin.IO (0.1.5)
+    Endorphin.IO (0.1.6)
       FSharp.Core
       log4net
     FSharp.Core (4.0.0.1) - redirects: force
@@ -27,5 +27,5 @@ NUGET
     SourceLink.Fake (1.1)
 GITHUB
   remote: fsharp/FAKE
-    modules/Octokit/Octokit.fsx (7faaaf53e4a8fbe04a4d2b4c1bfc5d09bd82eed6)
+    modules/Octokit/Octokit.fsx (934dc8313e2c54793813058fe2540511ad3b8468)
       Octokit (>= 0.20)
