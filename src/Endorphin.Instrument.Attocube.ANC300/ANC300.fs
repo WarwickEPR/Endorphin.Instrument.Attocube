@@ -12,9 +12,10 @@ module ANC300 =
 
 
     type Axis =
-        | X = 1
-        | Y = 2
-        | Z = 3
+        | X
+        | Y
+        | Z
+    let axisNumber = function | X -> 1 | Y -> 2 | Z -> 3
 
     type Direction = Up | Down
 
@@ -109,8 +110,8 @@ module ANC300 =
             | ["OK"] -> return ()
             | _ -> failwithf "Lua command failed: %A" response }
 
-        member x.Oscillate axis start max min stepsize time trigger =
-            x.SendCommandAsync <| (sprintf "wobble(%s,%f,%f,%f,%f,%f,%A)" (luaAxis axis) start max min stepsize time trigger)
+        member x.Oscillate axis start max min stepsize (dwellTime:float<s>) (trigger:bool) =
+            x.SendCommandAsync <| (sprintf "wobble(%s,%f,%f,%f,%f,%f,%A)" (luaAxis axis) start max min stepsize dwellTime trigger)
 
         member x.Path axis points time trigger =
             let points' = "{ " + (List.reduce (sprintf "%s, %s") points) + " }"
@@ -121,6 +122,9 @@ module ANC300 =
 
         member x.SetOffset axis (offset:float<V>) =
             x.SendCommandSync <| sprintf "setOffset(%s,%f)" (luaAxis axis) offset
+
+        member x.Stop axis =
+            sprintf "%s:stop()" (luaAxis axis) |> x.SendCommandSync
 
         interface IDisposable with
             member __.Dispose() = (luaPort :> IDisposable).Dispose()
@@ -206,39 +210,39 @@ module ANC300 =
                 failwithf "ANC300 query '%s' failed: %A" query response
         
         member x.GetMode (axis:Axis) =
-            let response = sprintf "getm %d" (int axis) |> x.Query
+            let response = sprintf "getm %d" (axisNumber axis) |> x.Query
             match extractMode response with
             | Some mode -> mode
             | None -> failwithf "Failed to get mode"
 
         member x.SetMode (axis:Axis) (mode:PositionerMode) =
             // Doesn't work for OSV!
-            sprintf "setm %d %A" (int axis) mode |> x.SendCommandSync
+            sprintf "setm %d %A" (axisNumber axis) mode |> x.SendCommandSync
 
 // Not permitted
 //        member x.SetOffsetVoltage (axis:Axis) (osv:float<V>) =
-//            sprintf "seta %d %f" (int axis) osv |> x.SendCommandSync
+//            sprintf "seta %d %f" (axisNumber axis ) osv |> x.SendCommandSync
 
         member x.GetOffsetVoltage (axis:Axis) =
-            let response = sprintf "geta %d" (int axis) |> x.Query
+            let response = sprintf "geta %d" (axisNumber axis) |> x.Query
             match extractVoltage response with
             | Some voltage -> voltage
             | None -> failwithf "Failed to get offset voltage"
 
         member x.SetStepVoltage (axis:Axis) (v:float<V>) =
-            sprintf "setv %d %f" (int axis) v |> x.SendCommandSync
+            sprintf "setv %d %f" (axisNumber axis ) v |> x.SendCommandSync
 
         member x.GetStepVoltage (axis:Axis) =
-            let response = sprintf "getv %d" (int axis) |> x.Query
+            let response = sprintf "getv %d" (axisNumber axis ) |> x.Query
             match extractVoltage response with
             | Some voltage -> voltage
             | None -> failwithf "Failed to get step voltage"
 
         member x.SetStepFrequency (axis:Axis) (f:int<Hz>) =
-            sprintf "setf %d %d" (int axis) f |> x.SendCommandSync
+            sprintf "setf %d %d" (axisNumber axis ) f |> x.SendCommandSync
 
         member x.GetStepFrequency (axis:Axis) =
-            let response = sprintf "getf %d" (int axis) |> x.Query
+            let response = sprintf "getf %d" (axisNumber axis ) |> x.Query
             match response |> extractFrequency with
             | Some f -> f
             | None -> failwithf "Failed to get frequency"
@@ -246,20 +250,29 @@ module ANC300 =
         // Can fail if in the wrong mode. Runs in the background on device
         member x.Step (axis:Axis) direction count =
             let command = match direction with Up -> "stepu" | Down -> "stepd"
-            sprintf "%s %d %d" command (int axis) count |> x.SendCommandAsync
+            sprintf "%s %d %d" command (axisNumber axis ) count |> x.SendCommandAsync
+
+        // Can fail if in the wrong mode. Waits until the stepping has completed
+        member x.StepAndWait (axis:Axis) direction count =
+            let command = match direction with Up -> "stepu" | Down -> "stepd"
+            sprintf "%s %d %d" command (axisNumber axis ) count |> x.SendCommandAsync
+        
+        member x.Wait axis =
+            sprintf "stepw %d" (axisNumber axis ) |> x.SendCommandAsync
 
         member x.Stop (axis:Axis) =
-            axis |> int |> sprintf "stop %d" |> x.SendCommandSync
-
-        member x.Wait (axis:Axis) =
-            axis |> int |> sprintf "wait %d" |> x.SendCommandAsync
+            axis |> axisNumber |> sprintf "stop %d" |> x.SendCommandSync
 
         interface IDisposable with
             member __.Dispose() = (port :> IDisposable).Dispose()
 
+
     /// Wraps up access to positioners in one interface
     /// Adds checks and compound commands
-    type Positioner(control:ControlPort,lua:LuaPort,axis) =
+    type Positioner(hostname,axis) =
+
+        let control = new ControlPort(hostname)
+        let lua = new LuaPort(hostname)
 
         member __.Mode with get() = control.GetMode axis
                         and set mode = lua.SetMode axis mode
@@ -310,22 +323,23 @@ module ANC300 =
                 x.State <- Floating osv }
 
         /// Single triangular oscillation of the positioner
-        member x.Oscillate depth points time trigger = async {
-            let oscillateZ (centre:float<V>) amplitude points dwell trigger =
+        member x.Oscillate depth points period trigger = async {
+            let oscillateZ (centre:float<V>) amplitude points (period:float<s>) trigger =
                 let start = centre
                 let voltageAmplitude = amplitude * x.VoltageLimit()
+                let dwell = period / (float (2 * points))
                 let max   = if (centre + voltageAmplitude) <= x.VoltageLimit() then centre + voltageAmplitude else x.VoltageLimit()
                 let min   = if (centre + voltageAmplitude) >= 0.0<V> then centre + voltageAmplitude else x.VoltageLimit()
                 let stepsize = (max - min) / (float <| points-1)
-                lua.Oscillate axis start max min stepsize time trigger
+                lua.Oscillate axis start max min stepsize dwell trigger
             match x.State with
             | Off -> failwithf "Not moving as positioner %A is grounded" axis
             | Parked ->
                 x.State <- Floating <| x.MidRange()
-                do! oscillateZ (x.MidRange()) depth points time trigger
+                do! oscillateZ (x.MidRange()) depth points period trigger
                 x.State <- Parked
             | Floating osv ->
-                do! oscillateZ osv depth points time trigger }
+                do! oscillateZ osv depth points period trigger }
 
         member __.Wait() = control.Wait axis
         member __.Stop() = control.Stop axis
@@ -335,32 +349,40 @@ module ANC300 =
             do! x.Step direction count
             do! x.Wait() }
 
+        interface IDisposable with
+            member __.Dispose() =
+                (control :> IDisposable).Dispose()
+                (lua :> IDisposable).Dispose()
+
     type ANC300(hostname) =
 
-        let controlPort = new ControlPort(hostname)
-        let luaPort = new LuaPort(hostname)
+        // To be sure we always have a channel to send stop commands to
+        let control = new ControlPort(hostname)
+        let xPositioner = new Positioner(hostname,Axis.X)
+        let yPositioner = new Positioner(hostname,Axis.Y)
+        let zPositioner = new Positioner(hostname,Axis.Z)
 
-        member __.X() = Positioner(controlPort,luaPort,Axis.X)
-        member __.Y() = Positioner(controlPort,luaPort,Axis.Y)
-        member __.Z() = Positioner(controlPort,luaPort,Axis.Z)
+        // Each positioner opens its own sockets for control & lua
+        member __.X = xPositioner
+        member __.Y = yPositioner
+        member __.Z = zPositioner
+        member __.Axis axis = match axis with
+                              | Axis.X -> xPositioner
+                              | Axis.Y -> yPositioner
+                              | Axis.Z -> zPositioner
+
+        member __.Stop(axis) =
+            control.Stop(axis)
 
         member x.StopAll() =
-            x.X().Stop()
-            x.Y().Stop()
-            x.Z().Stop()
+            x.Stop(Axis.X)
+            x.Stop(Axis.Y)
+            x.Stop(Axis.Z)
 
         interface IDisposable with
             member __.Dispose() =
-                (controlPort :> IDisposable).Dispose()
-                (luaPort :> IDisposable).Dispose()
-                
-                
-                
-                
-                
-                
-                
-                
-                
-                
-                
+                let dispose x = (x :> IDisposable).Dispose()
+                dispose control
+                dispose xPositioner
+                dispose yPositioner
+                dispose zPositioner
