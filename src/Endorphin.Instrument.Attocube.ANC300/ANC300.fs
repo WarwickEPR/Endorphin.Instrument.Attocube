@@ -89,7 +89,6 @@ module ANC300 =
         | Axis.X -> "m1"
         | Axis.Y -> "m2"
         | Axis.Z -> "m3"
-        | x -> failwithf "Invalid axis %A" x
 
         do
             luaPort.Start()
