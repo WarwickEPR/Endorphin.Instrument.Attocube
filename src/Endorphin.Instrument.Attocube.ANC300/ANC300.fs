@@ -73,17 +73,22 @@ module ANC300 =
                sweep(axis,max-stepsize,min,-stepsize,dwell,sendTrigger) \
                sweep(axis,min+stepsize,start,stepsize,dwell,sendTrigger)" ]
 
+    type Response =
+    | Success of string list
+    | Failure of string list
+
+    let failOnFailure msg =
+        function
+        | Success reply -> reply
+        | Failure reply ->
+            let replyStr = List.reduce (fun a b -> a + "; " + b) reply
+            failwithf "%s: %s" msg replyStr
 
     /// Access to the experimental Lua console
     /// Preferrably use the standard control port rather than build code on the fly
     /// but some functions are only available via Lua, in particular OSV
-    type LuaPort(hostname) =
-
-        let logger = log4net.LogManager.GetLogger("ANC300 Lua")
-        let handleOutput =
-            sprintf "Returned: %s" >> logger.Debug
-
-        let luaPort = new TcpipInstrument("ANC300 Lua port",handleOutput,hostname,7231)
+    type LuaPort(hostname) as this =
+        inherit PromptTcpipInstrument("ANC300 Lua port","> ",hostname,7231)
 
         let luaAxis = function
         | Axis.X -> "m1"
@@ -91,58 +96,44 @@ module ANC300 =
         | Axis.Z -> "m3"
 
         do
-            luaPort.Start()
-            "123456" |> luaPort.QueryUntil (fun x -> x.StartsWith "> ") |> ignore
-            luaFunctions |> List.iter luaPort.WriteLine
+            this.Start()
+            "123456" |> this.Query |> ignore
+            luaFunctions |> List.iter (this.Query >> ignore)
         
         // expose loaded functions as members
 
+        let parseResponse = function
+            | [error:string] when error.StartsWith("ERROR") -> failwithf "Lua command failed: %s" error
+            | response -> response
+
         member __.SendCommandSync command =
-            let response = command |> luaPort.QueryUntil (fun x -> x.StartsWith "> ")
-            match response with
-            | ["OK"] -> ()
-            | _ -> failwithf "Lua command failed: %A" response
+            command |> this.Query |> parseResponse
 
         member __.SendCommandAsync command = async {
-            let! response = command |> luaPort.QueryUntilAsync (fun x -> x.StartsWith "> ")
-            match response with
-            | ["OK"] -> return ()
-            | _ -> failwithf "Lua command failed: %A" response }
+            let! response = command |> this.QueryAsync
+            return response |> parseResponse }
 
         member x.Oscillate axis start max min stepsize (dwellTime:float<s>) (trigger:bool) =
-            x.SendCommandAsync <| (sprintf "wobble(%s,%f,%f,%f,%f,%f,%A)" (luaAxis axis) start max min stepsize dwellTime trigger)
+            (sprintf "wobble(%s,%f,%f,%f,%f,%f,%A)" (luaAxis axis) start max min stepsize dwellTime trigger) |> x.SendCommandAsync |> Async.Ignore
 
         member x.Path axis points time trigger =
             let points' = "{ " + (List.reduce (sprintf "%s, %s") points) + " }"
-            x.SendCommandAsync <| sprintf "path( %s, %s, %f, %A )" (luaAxis axis) points' time trigger
+            sprintf "path( %s, %s, %f, %A )" (luaAxis axis) points' time trigger |> x.SendCommandAsync |> Async.Ignore
 
         member x.SetMode axis (mode:PositionerMode) =
-            x.SendCommandSync <| sprintf "%s.mode = %A" (luaAxis axis) mode
+            sprintf "%s.mode = %A" (luaAxis axis) mode |> x.SendCommandSync |> ignore
 
         member x.SetOffset axis (offset:float<V>) =
-            x.SendCommandSync <| sprintf "setOffset(%s,%f)" (luaAxis axis) offset
+            sprintf "setOffset(%s,%f)" (luaAxis axis) offset |> x.SendCommandSync |> ignore
 
         member x.Stop axis =
-            sprintf "%s:stop()" (luaAxis axis) |> x.SendCommandSync
+            sprintf "%s:stop()" (luaAxis axis) |> x.SendCommandSync |> ignore
 
-        interface IDisposable with
-            member __.Dispose() = (luaPort :> IDisposable).Dispose()
+
 
     /// Directly issue commands to the ANC300
-    type ControlPort(hostname) =
-        let logger = log4net.LogManager.GetLogger("ANC300 Control")
-        let handleOutput =
-            sprintf "Returned: %s" >> logger.Debug
-
-        let port = new TcpipInstrument("ANC300 control port",handleOutput,hostname,7230)
-
-        let extractQueryResponse (lines : string list) =
-            printf "Lines going in: %A" lines
-            match List.tryLast lines with
-            | Some "OK" ->
-                List.truncate (lines.Length-1) lines
-            | _ ->
-                failwithf "ANC300 query failed"
+    type ControlPort(hostname) as this =
+        inherit TcpipInstrument<Response>("ANC300 Control",hostname,7230)
 
         let extractMode lines =
             let r = new Regex(@"^mode\s*=\s*(\S+)")
@@ -182,66 +173,58 @@ module ANC300 =
                 else
                     None
             | _ -> None
-
+        
         do
-            port.Start()
-            "123456" |> port.QueryUntil (fun x -> x.StartsWith "> ") |> ignore
+            this.Start()
+            "123456" |> this.Query |> ignore
+            "echo off" |> this.Query |> ignore
 
-        member __.SendCommandSync command =
-            let response = command |> port.QueryUntil (fun x -> x.StartsWith "> ")
-            match response with
-            | ["OK"] -> ()
-            | _ -> failwithf "ANC300 command failed: %A" response
-
-        member __.SendCommandAsync command = async {
-            let! response = command |> port.QueryUntilAsync (fun x -> x.StartsWith "> ")
-            match response with
-            | ["OK"] -> return ()
-            | _ -> failwithf "ANC300 command failed: %A" response }
-
-        member __.Query query =
-            let response = query |> port.QueryUntil (fun x -> x.StartsWith "> ")
-            match List.tryLast response with
-            | Some "OK" ->
-                // strip off echoed request and OK response
-                List.truncate (response.Length-1) response |> List.tail
-            | _ ->
-                failwithf "ANC300 query '%s' failed: %A" query response
+        override __.ExtractReply received =
+            let (lines,remainder) = received
+            match List.tryFindIndex (function | "OK" | "ERROR" -> true | _ -> false) lines with
+            | None -> (received,None)
+            | Some i ->
+                let (replyLines,lines') = List.splitAt i lines
+                let received' = (lines'.Tail,remainder)
+                let reply = match lines.[i] with
+                            | "OK" -> Success replyLines
+                            | _    -> Failure replyLines
+                (received',Some reply)
         
         member x.GetMode (axis:Axis) =
-            let response = sprintf "getm %d" (axisNumber axis) |> x.Query
+            let response = sprintf "getm %d" (axisNumber axis) |> x.Query |> failOnFailure "GetMode failed"
             match extractMode response with
             | Some mode -> mode
-            | None -> failwithf "Failed to get mode"
+            | None -> failwithf "Failed to extract mode"
 
         member x.SetMode (axis:Axis) (mode:PositionerMode) =
             // Doesn't work for OSV!
-            sprintf "setm %d %A" (axisNumber axis) mode |> x.SendCommandSync
+            sprintf "setm %d %A" (axisNumber axis) mode |> x.Query |> failOnFailure "SetMode failed" |> ignore
 
 // Not permitted
 //        member x.SetOffsetVoltage (axis:Axis) (osv:float<V>) =
 //            sprintf "seta %d %f" (axisNumber axis ) osv |> x.SendCommandSync
 
         member x.GetOffsetVoltage (axis:Axis) =
-            let response = sprintf "geta %d" (axisNumber axis) |> x.Query
+            let response = sprintf "geta %d" (axisNumber axis) |> x.Query |> failOnFailure "GetOffsetVoltage failed"
             match extractVoltage response with
             | Some voltage -> voltage
             | None -> failwithf "Failed to get offset voltage"
 
         member x.SetStepVoltage (axis:Axis) (v:float<V>) =
-            sprintf "setv %d %f" (axisNumber axis ) v |> x.SendCommandSync
+            sprintf "setv %d %f" (axisNumber axis ) v |> x.Query |> failOnFailure "SetStepVoltage failed" |> ignore
 
         member x.GetStepVoltage (axis:Axis) =
-            let response = sprintf "getv %d" (axisNumber axis ) |> x.Query
+            let response = sprintf "getv %d" (axisNumber axis ) |> x.Query |> failOnFailure "GetStepVoltage failed"
             match extractVoltage response with
             | Some voltage -> voltage
             | None -> failwithf "Failed to get step voltage"
 
         member x.SetStepFrequency (axis:Axis) (f:int<Hz>) =
-            sprintf "setf %d %d" (axisNumber axis ) f |> x.SendCommandSync
+            sprintf "setf %d %d" (axisNumber axis ) f |> x.Query |> failOnFailure "SetStepFrequency failed" |> ignore
 
         member x.GetStepFrequency (axis:Axis) =
-            let response = sprintf "getf %d" (axisNumber axis ) |> x.Query
+            let response = sprintf "getf %d" (axisNumber axis ) |> x.Query |> failOnFailure "GetStepFrequency failed"
             match response |> extractFrequency with
             | Some f -> f
             | None -> failwithf "Failed to get frequency"
@@ -249,21 +232,16 @@ module ANC300 =
         // Can fail if in the wrong mode. Runs in the background on device
         member x.Step (axis:Axis) direction count =
             let command = match direction with Up -> "stepu" | Down -> "stepd"
-            sprintf "%s %d %d" command (axisNumber axis ) count |> x.SendCommandAsync
+            async {
+                let! response = sprintf "%s %d %d" command (axisNumber axis ) count |> x.QueryAsync
+                response |> failOnFailure "Step failed" |> ignore }
 
-        // Can fail if in the wrong mode. Waits until the stepping has completed
-        member x.StepAndWait (axis:Axis) direction count =
-            let command = match direction with Up -> "stepu" | Down -> "stepd"
-            sprintf "%s %d %d" command (axisNumber axis ) count |> x.SendCommandAsync
-        
-        member x.Wait axis =
-            sprintf "stepw %d" (axisNumber axis ) |> x.SendCommandAsync
+        member x.Wait axis = async {
+            let! response = sprintf "stepw %d" (axisNumber axis ) |> x.QueryAsync
+            response |> failOnFailure "Wait failed" |> ignore }
 
-        member x.Stop (axis:Axis) =
-            axis |> axisNumber |> sprintf "stop %d" |> x.SendCommandSync
-
-        interface IDisposable with
-            member __.Dispose() = (port :> IDisposable).Dispose()
+        member x.Stop (axis:Axis) = 
+            axis |> axisNumber |> sprintf "stop %d" |> x.Query |> failOnFailure "Stop failed" |> ignore
 
 
     /// Wraps up access to positioners in one interface
@@ -291,7 +269,7 @@ module ANC300 =
 
         member x.Frequency with get() = control.GetStepFrequency axis
                             and set f = if f > 0<Hz> && f < x.FrequencyLimit() then
-                                         control.SetStepFrequency axis f
+                                         control.SetStepFrequency axis f 
                                         else failwithf "Step frequency %dHz out of range" f
 
         member x.Voltage with get() = control.GetStepVoltage axis
@@ -323,7 +301,7 @@ module ANC300 =
 
         /// Single triangular oscillation of the positioner
         member x.Oscillate depth points period trigger = async {
-            let oscillateZ (centre:float<V>) amplitude points (period:float<s>) trigger =
+            let oscillate (centre:float<V>) amplitude points (period:float<s>) trigger =
                 let start = centre
                 let voltageAmplitude = amplitude * x.VoltageLimit()
                 let dwell = period / (float (2 * points))
@@ -335,10 +313,10 @@ module ANC300 =
             | Off -> failwithf "Not moving as positioner %A is grounded" axis
             | Parked ->
                 x.State <- Floating <| x.MidRange()
-                do! oscillateZ (x.MidRange()) depth points period trigger
+                do! oscillate (x.MidRange()) depth points period trigger
                 x.State <- Parked
             | Floating osv ->
-                do! oscillateZ osv depth points period trigger }
+                do! oscillate osv depth points period trigger }
 
         member __.Wait() = control.Wait axis
         member __.Stop() = control.Stop axis
