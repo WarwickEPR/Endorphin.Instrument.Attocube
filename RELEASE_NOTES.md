@@ -1,3 +1,6 @@
+## 0.1.3 - 2016-08-22
+- Update to use Endorphin.IO 0.1.8
+
 ## 0.1.2 - 2016-08-22
 - Update to use latest Endorphin.IO and handle error conditions
 
