@@ -1,3 +1,8 @@
+## 0.1.5 - 2016-08-23
+- Fix error handling on Lua console
+- Fix authentication & echo supression on the standard console
+- Fix errors in the pre-defined Lua functions
+
 ## 0.1.4 - 2016-08-23
 - Add path generation for oscillations
 
