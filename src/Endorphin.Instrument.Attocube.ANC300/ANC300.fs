@@ -52,10 +52,10 @@ module ANC300 =
           """function dir(d) for i in io.popen("ls " .. d):lines() do print(i) end end"""
           """function run(x) for i in io.popen(x):lines() do print(i) end end"""
           """function busywait(t) local n = math.ceil(t / 1.42e-3); for i = 0,n do end end""" // in ms
-          """function setOffset(axis,v) axis.mode = OSV; axis.osv=v"""
+          """function setOffset(axis,v) axis.mode = OSV; axis.osv=v end"""
           "function path(axis,points,dwell,sendTrigger) \
                 axis.mode = OSV; \
-                for i,v ipairs do \
+                for i,v in ipairs(points) do \
                    axis.osv = v \
                    if sendTrigger then trigger() end \
                    busywait(dwell) \
@@ -103,12 +103,15 @@ module ANC300 =
         
         // expose loaded functions as members
 
-        let parseResponse = function
-            | [error:string] when error.StartsWith("ERROR") -> failwithf "Lua command failed: %s" error
-            | response -> response
+        let parseResponse (response: string list) =
+            let response' = response.[1..response.Length-2]
+            match response' with
+            | error :: tail when error.StartsWith("ERROR") -> failwithf "Lua command failed: %s" error
+            | x -> x
 
         member __.SendCommandSync command =
-            command |> this.Query |> parseResponse
+            let response = command |> this.Query
+            response |> parseResponse
 
         member __.SendCommandAsync command = async {
             let! response = command |> this.QueryAsync
@@ -121,7 +124,8 @@ module ANC300 =
             // dwell time per point in seconds, converted to ms
             let points' = List.map (float >> sprintf "%.2f") points
             let points'' = "{ " + (List.reduce (sprintf "%s, %s") points') + " }"
-            sprintf "path( %s, %s, %f, %A )" (luaAxis axis) points'' (1000.0</s>*dwell) trigger |> x.SendCommandAsync |> Async.Ignore
+            let command = sprintf "path( %s, %s, %f, %A )" (luaAxis axis) points'' (1000.0</s>*dwell) trigger
+            command |> x.SendCommandAsync |> Async.Ignore
 
         member x.SetMode axis (mode:PositionerMode) =
             sprintf "%s.mode = %A" (luaAxis axis) mode |> x.SendCommandSync |> ignore
@@ -179,7 +183,7 @@ module ANC300 =
         
         do
             this.Start()
-            "123456" |> this.Query |> ignore
+            "123456" |> this.Send |> ignore
             "echo off" |> this.Query |> ignore
 
         override __.ExtractReply received =
@@ -258,7 +262,7 @@ module ANC300 =
             let voltageLimit = this.VoltageLimit()
             let voltageAmplitude = amplitude * voltageLimit
             let max   = if (centre + voltageAmplitude) <= voltageLimit then centre + voltageAmplitude else voltageLimit
-            let min   = if (centre + voltageAmplitude) >= 0.0<V> then centre + voltageAmplitude else voltageLimit
+            let min   = if (centre - voltageAmplitude) >= 0.0<V> then centre - voltageAmplitude else 0.0<V>
             let stepsize = (max - min) / (float <| points-1)
             [ centre .. stepsize .. max ] @ [ max - stepsize .. - stepsize .. min ] @ [ min + stepsize .. stepsize .. centre ]
 
