@@ -60,6 +60,7 @@ module ANC300 =
                    if sendTrigger then trigger() end \
                    busywait(dwell) \
                 end \
+                if sendTrigger then trigger() end \
              end"
           "function sweep(axis,start,finish,stepsize,dwell,sendTrigger) \
                 axis.mode = OSV; \
@@ -116,9 +117,11 @@ module ANC300 =
         member x.Oscillate axis start max min stepsize (dwellTime:float<s>) (trigger:bool) =
             (sprintf "wobble(%s,%f,%f,%f,%f,%f,%A)" (luaAxis axis) start max min stepsize dwellTime trigger) |> x.SendCommandAsync |> Async.Ignore
 
-        member x.Path axis points time trigger =
-            let points' = "{ " + (List.reduce (sprintf "%s, %s") points) + " }"
-            sprintf "path( %s, %s, %f, %A )" (luaAxis axis) points' time trigger |> x.SendCommandAsync |> Async.Ignore
+        member x.Path axis (points:float<V> list) (dwell:float<s>) trigger =
+            // dwell time per point in seconds, converted to ms
+            let points' = List.map (float >> sprintf "%.2f") points
+            let points'' = "{ " + (List.reduce (sprintf "%s, %s") points') + " }"
+            sprintf "path( %s, %s, %f, %A )" (luaAxis axis) points'' (1000.0</s>*dwell) trigger |> x.SendCommandAsync |> Async.Ignore
 
         member x.SetMode axis (mode:PositionerMode) =
             sprintf "%s.mode = %A" (luaAxis axis) mode |> x.SendCommandSync |> ignore
@@ -246,10 +249,18 @@ module ANC300 =
 
     /// Wraps up access to positioners in one interface
     /// Adds checks and compound commands
-    type Positioner(hostname,axis) =
+    type Positioner(hostname,axis) as this =
 
         let control = new ControlPort(hostname)
         let lua = new LuaPort(hostname)
+
+        let oscillation (centre:float<V>) amplitude points =
+            let voltageLimit = this.VoltageLimit()
+            let voltageAmplitude = amplitude * voltageLimit
+            let max   = if (centre + voltageAmplitude) <= voltageLimit then centre + voltageAmplitude else voltageLimit
+            let min   = if (centre + voltageAmplitude) >= 0.0<V> then centre + voltageAmplitude else voltageLimit
+            let stepsize = (max - min) / (float <| points-1)
+            [ centre .. stepsize .. max ] @ [ max - stepsize .. - stepsize .. min ] @ [ min + stepsize .. stepsize .. centre ]
 
         member __.Mode with get() = control.GetMode axis
                         and set mode = lua.SetMode axis mode
@@ -317,6 +328,19 @@ module ANC300 =
                 x.State <- Parked
             | Floating osv ->
                 do! oscillate osv depth points period trigger }
+        
+        member x.GenerateOscillation amplitude points =
+            match x.State with
+            | Parked ->
+                oscillation (x.MidRange()) amplitude points
+            | Floating osv ->
+                oscillation osv amplitude points
+            | _ -> []
+
+        member x.Path points (period:float<s>) trigger = async {
+            let dwell = period / ( float <| List.length points)
+            do! lua.Path axis points dwell trigger }
+
 
         member __.Wait() = control.Wait axis
         member __.Stop() = control.Stop axis
