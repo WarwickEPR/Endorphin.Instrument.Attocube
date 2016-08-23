@@ -1,3 +1,6 @@
+## 0.1.4 - 2016-08-23
+- Add path generation for oscillations
+
 ## 0.1.3 - 2016-08-22
 - Update to use Endorphin.IO 0.1.8
 
