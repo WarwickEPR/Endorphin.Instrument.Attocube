@@ -123,11 +123,13 @@ module ANC300 =
             let luaArray = List.map (fun x -> x.ToString())
                            >> List.reduce (sprintf "%s,%s")
                            >> (sprintf "{%s}")
-            let parts = a |> List.chunkBySize chunkSize // split into arrays named a0,a1,a2,...
-                          |> List.mapi (fun i x -> (sprintf "%s%d = " name i) + (luaArray x))
-            let mergei i = sprintf "append(%s,%s%i) %s%i = nil" name name i name i
-            let merges = List.mapi (fun i x -> mergei i) parts
-            ["a={}"] @ parts @ merges
+            let parts = a |> List.chunkBySize chunkSize // split into arrays named a,a0,a1,a2,...
+            let vars = [sprintf "%s = %s" name (luaArray parts.Head)]
+                       @ List.mapi (fun i x -> (sprintf "%s%d = " name i) + (luaArray x)) parts.Tail
+            let mergei = sprintf "append(%s,%s%i)" name name
+            let merges = List.mapi (fun i _ -> mergei i) parts.Tail
+            let cleanup = parts |> List.mapi (fun i _ -> sprintf "%s%d = {}" name i) |> List.reduce (sprintf "%s %s")
+            ["a={}"] @ vars @ merges @ [cleanup]
 
         member __.SendCommandSync command =
             let response = command |> this.Query

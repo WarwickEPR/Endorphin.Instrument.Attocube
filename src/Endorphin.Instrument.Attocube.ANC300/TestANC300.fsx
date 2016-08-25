@@ -26,8 +26,12 @@ let readStatus = async {
         printfn "V: %.2f" a.Z.Offset
         do! Async.Sleep 50
 
-    [ 1 .. 500 ] |> a.Lua.SetArray "test"
-    a.Lua.Query "for i=1,500 do print(test[i]) end" |> List.iter (printf "%s")
+    let A = [1..308]
+    A |> a.Lua.SetArray "test"
+    let i = a.Lua.Query "for i=1,#test do print(test[i]) end"
+    i |> List.iter (printfn "%s")
+    a.Lua.Query "print(#test)" |> List.map (printfn "%s") |> ignore
+    printfn "i.Length %d %d" A.Length i.Length
     }
 
 
