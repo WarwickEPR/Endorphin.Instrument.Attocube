@@ -23,10 +23,16 @@ module ANC300 =
     | Ground
     | Step
     | OffsetVoltage
-     override x.ToString() = match x with
-                             | Ground -> "GND"
-                             | OffsetVoltage -> "OSV"
-                             | Step -> "STP"
+
+    let controlModeString = function
+                            | Ground -> "GND"
+                            | Step -> "STP"
+                            | OffsetVoltage -> "OFF"
+
+    let luaModeString = function
+                        | Ground -> "GND"
+                        | Step -> "STP"
+                        | OffsetVoltage -> "OSV"
 
     type PositionerState =
     | Off
@@ -35,10 +41,10 @@ module ANC300 =
 
     let private uc (x:string) = x.ToUpper()
 
-    let parseMode = uc >> function
+    let controlParseMode = uc >> function
                           | "GND" -> Ground
                           | "STP" -> Step
-                          | "OSV" -> OffsetVoltage
+                          | "OFF" -> OffsetVoltage
                           | x -> failwithf "Unexpected positioner mode: \"%s\"" x
 
     let luaFunctions =
@@ -128,7 +134,7 @@ module ANC300 =
             command |> x.SendCommandAsync |> Async.Ignore
 
         member x.SetMode axis (mode:PositionerMode) =
-            sprintf "%s.mode = %A" (luaAxis axis) mode |> x.SendCommandSync |> ignore
+            sprintf "%s.mode = %s" (luaAxis axis) (luaModeString mode) |> x.SendCommandSync |> ignore
 
         member x.SetOffset axis (offset:float<V>) =
             sprintf "setOffset(%s,%f)" (luaAxis axis) offset |> x.SendCommandSync |> ignore
@@ -148,7 +154,7 @@ module ANC300 =
             | [response] ->
                 let m = r.Match(response)
                 if m.Success then
-                    m.Groups.[1].Value |> parseMode |> Some
+                    m.Groups.[1].Value |> controlParseMode |> Some
                 else
                     None
             | _ -> None
@@ -206,7 +212,7 @@ module ANC300 =
 
         member x.SetMode (axis:Axis) (mode:PositionerMode) =
             // Doesn't work for OSV!
-            sprintf "setm %d %A" (axisNumber axis) mode |> x.Query |> failOnFailure "SetMode failed" |> ignore
+            sprintf "setm %d %s" (axisNumber axis) (controlModeString mode) |> x.Query |> failOnFailure "SetMode failed" |> ignore
 
 // Not permitted
 //        member x.SetOffsetVoltage (axis:Axis) (osv:float<V>) =
