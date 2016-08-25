@@ -118,9 +118,9 @@ module ANC300 =
 
         /// Split arrays into smaller chunks as the lua control port has a buffer limit and no obvious line continuations
         /// This creates a number of smaller arrays then merges them onto one variable. Yuk
-        let splitLuaArray name a =
-            let chunkSize = 20
-            let luaArray = List.map (fun x -> x.ToString())
+        let splitLuaFloatArray name a =
+            let chunkSize = 50
+            let luaArray = List.map (sprintf "%.2f")
                            >> List.reduce (sprintf "%s,%s")
                            >> (sprintf "{%s}")
             let parts = a |> List.chunkBySize chunkSize // split into arrays named a,a0,a1,a2,...
@@ -128,8 +128,9 @@ module ANC300 =
                        @ List.mapi (fun i x -> (sprintf "%s%d = " name i) + (luaArray x)) parts.Tail
             let mergei = sprintf "append(%s,%s%i)" name name
             let merges = List.mapi (fun i _ -> mergei i) parts.Tail
-            let cleanup = parts |> List.mapi (fun i _ -> sprintf "%s%d = {}" name i) |> List.reduce (sprintf "%s %s")
-            ["a={}"] @ vars @ merges @ [cleanup]
+            let cleanup = parts |> List.mapi (fun i _ -> sprintf "%s%d = {}" name i)
+            let finishUp = merges @ cleanup |> List.reduce (sprintf "%s %s")
+            vars @ [finishUp]
 
         member __.SendCommandSync command =
             let response = command |> this.Query
@@ -143,7 +144,7 @@ module ANC300 =
             (sprintf "wobble(%s,%f,%f,%f,%f,%f,%A)" (luaAxis axis) start max min stepsize dwellTime trigger) |> x.SendCommandAsync |> Async.Ignore
 
         member x.SetArray name listOfData =
-            splitLuaArray name listOfData |> List.map (this.SendCommandSync >> parseResponse) |> ignore
+            splitLuaFloatArray name listOfData |> List.map (this.SendCommandSync >> parseResponse) |> ignore
 
         member x.Path axis pointsVarName (dwell:float<s>) trigger =
             // dwell time per point in seconds, converted to ms
