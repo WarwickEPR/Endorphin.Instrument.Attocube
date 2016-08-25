@@ -78,7 +78,7 @@ module ANC300 =
           "function wobble(axis,start,max,min,stepsize,dwell,sendTrigger) \
                sweep(axis,start,max,stepsize,dwell,sendTrigger) \
                sweep(axis,max-stepsize,min,-stepsize,dwell,sendTrigger) \
-               sweep(axis,min+stepsize,start,stepsize,dwell,sendTrigger)" ]
+               sweep(axis,min+stepsize,start,stepsize,dwell,sendTrigger) end" ]
 
     type Response =
     | Success of string list
