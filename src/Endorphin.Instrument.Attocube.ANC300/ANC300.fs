@@ -59,6 +59,7 @@ module ANC300 =
           """function run(x) for i in io.popen(x):lines() do print(i) end end"""
           """function busywait(t) local n = math.ceil(t / 1.42e-3); for i = 0,n do end end""" // in ms
           """function setOffset(axis,v) axis.mode = OSV; axis.osv=v end"""
+          "function append(x,y) offset=#x for i,v in pairs(y) do x[offset+i] = v end end"
           "function path(axis,points,dwell,sendTrigger) \
                 axis.mode = OSV; \
                 for i,v in ipairs(points) do \
@@ -115,6 +116,19 @@ module ANC300 =
             | error :: tail when error.StartsWith("ERROR") -> failwithf "Lua command failed: %s" error
             | x -> x
 
+        /// Split arrays into smaller chunks as the lua control port has a buffer limit and no obvious line continuations
+        /// This creates a number of smaller arrays then merges them onto one variable. Yuk
+        let splitLuaArray name a =
+            let chunkSize = 20
+            let luaArray = List.map (fun x -> x.ToString())
+                           >> List.reduce (sprintf "%s,%s")
+                           >> (sprintf "{%s}")
+            let parts = a |> List.chunkBySize chunkSize // split into arrays named a0,a1,a2,...
+                          |> List.mapi (fun i x -> (sprintf "%s%d = " name i) + (luaArray x))
+            let mergei i = sprintf "append(%s,%s%i) %s%i = nil" name name i name i
+            let merges = List.mapi (fun i x -> mergei i) parts
+            ["a={}"] @ parts @ merges
+
         member __.SendCommandSync command =
             let response = command |> this.Query
             response |> parseResponse
@@ -126,11 +140,12 @@ module ANC300 =
         member x.Oscillate axis start max min stepsize (dwellTime:float<s>) (trigger:bool) =
             (sprintf "wobble(%s,%f,%f,%f,%f,%f,%A)" (luaAxis axis) start max min stepsize dwellTime trigger) |> x.SendCommandAsync |> Async.Ignore
 
-        member x.Path axis (points:float<V> list) (dwell:float<s>) trigger =
+        member x.SetArray name listOfData =
+            splitLuaArray name listOfData |> List.map (this.SendCommandSync >> parseResponse) |> ignore
+
+        member x.Path axis pointsVarName (dwell:float<s>) trigger =
             // dwell time per point in seconds, converted to ms
-            let points' = List.map (float >> sprintf "%.2f") points
-            let points'' = "{ " + (List.reduce (sprintf "%s, %s") points') + " }"
-            let command = sprintf "path( %s, %s, %f, %A )" (luaAxis axis) points'' (1000.0</s>*dwell) trigger
+            let command = sprintf "path( %s, %s, %f, %A )" (luaAxis axis) pointsVarName (1000.0</s>*dwell) trigger
             command |> x.SendCommandAsync |> Async.Ignore
 
         member x.SetMode axis (mode:PositionerMode) =
@@ -349,7 +364,8 @@ module ANC300 =
 
         member x.Path points (period:float<s>) trigger = async {
             let dwell = period / ( float <| List.length points)
-            do! lua.Path axis points dwell trigger }
+            lua.SetArray "points" points
+            do! lua.Path axis "points" dwell trigger }
 
 
         member __.Wait() = control.Wait axis
@@ -368,7 +384,8 @@ module ANC300 =
     type ANC300(hostname) =
 
         // To be sure we always have a channel to send stop commands to
-        let control = new ControlPort(hostname)
+        let master = new ControlPort(hostname)
+        let masterLua = new LuaPort(hostname)
         let xPositioner = new Positioner(hostname,Axis.X)
         let yPositioner = new Positioner(hostname,Axis.Y)
         let zPositioner = new Positioner(hostname,Axis.Z)
@@ -382,8 +399,11 @@ module ANC300 =
                               | Axis.Y -> yPositioner
                               | Axis.Z -> zPositioner
 
+        member __.DirectControl = master.Query
+        member __.Lua = masterLua
+
         member __.Stop(axis) =
-            control.Stop(axis)
+            master.Stop(axis)
 
         member x.StopAll() =
             x.Stop(Axis.X)
@@ -393,7 +413,7 @@ module ANC300 =
         interface IDisposable with
             member __.Dispose() =
                 let dispose x = (x :> IDisposable).Dispose()
-                dispose control
+                dispose master
                 dispose xPositioner
                 dispose yPositioner
                 dispose zPositioner

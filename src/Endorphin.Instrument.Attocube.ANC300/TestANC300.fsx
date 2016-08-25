@@ -6,11 +6,11 @@
 #r "System.Core.dll"
 #r "System.dll"
 #r "System.Numerics.dll"
+#r "../../packages/Endorphin.IO/lib/net452/Endorphin.IO.dll"
 #r "./bin/Debug/Endorphin.Instrument.Attocube.ANC300.dll"
 
 open Endorphin.Instrument.Attocube.ANC300
 open FSharp.Data.UnitSystems.SI.UnitSymbols
-open System
 
 //log4net.Config.BasicConfigurator.Configure()
 
@@ -25,7 +25,11 @@ let readStatus = async {
     for i in [1 .. 10] do
         printfn "V: %.2f" a.Z.Offset
         do! Async.Sleep 50
+
+    [ 1 .. 500 ] |> a.Lua.SetArray "test"
+    a.Lua.Query "for i=1,500 do print(test[i]) end" |> List.iter (printf "%s")
     }
+
 
 Async.RunSynchronously readStatus
 
